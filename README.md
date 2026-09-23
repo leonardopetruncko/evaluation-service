@@ -101,3 +101,11 @@ Saída (exemplo): `{"flag_name":"enable-new-dashboard","user_id":"user-abc","res
 
 **4. Verifique a Fila SQS:** Após fazer as chamadas acima, vá até o console da AWS, abra sua fila SQS e verifique se as mensagens (`EvaluationEvent`) estão chegando.
 
+## Arquitetura (Tech Challenge Fase 4)
+
+![Arquitetura da Fase 4](https://raw.githubusercontent.com/leonardopetruncko/toogle-master-gitops/main/docs/arquitetura/arquitetura-fase4.png)
+
+Este serviço decide se a flag está ligada para o usuário. É a porta de entrada do trace distribuído: chama flag e targeting, usa cache no Redis e publica o evento no SQS levando o traceparent junto.
+
+- Observabilidade e deploy (GitOps): https://github.com/leonardopetruncko/toogle-master-gitops
+- Melhorias e correções da fase: https://github.com/leonardopetruncko/toogle-master-gitops/blob/main/docs/melhorias-fase4.md
