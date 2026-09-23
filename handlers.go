@@ -35,6 +35,12 @@ func (a *App) evaluationHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Entrada inválida é erro do cliente (400), não falha do serviço: não polui a taxa de 5xx.
+	if err := validarNomeFlag(flagName); err != nil {
+		http.Error(w, `{"error": "flag_name inválido"}`, http.StatusBadRequest)
+		return
+	}
+
 	// 2. Obter a decisão (lógica de cache/serviço está em evaluator.go)
 	result, err := a.getDecision(reqCtx, userID, flagName)
 	if err != nil {

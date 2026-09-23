@@ -5,11 +5,14 @@ import (
 	"crypto/sha1"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	neturl "net/url"
 	"os"
+	"regexp"
 	"sync"
 	"time"
 
@@ -22,6 +25,22 @@ const (
 	// Tempo de vida do cache em segundos
 	CACHE_TTL = 30 * time.Second
 )
+
+// nomeFlagValido restringe o que pode virar caminho de URL nas chamadas aos outros
+// serviços (allowlist). O gosec apontou risco de SSRF (G704) porque o nome da flag
+// vem do usuário: validamos o formato e escapamos o valor antes de montar a URL.
+var nomeFlagValido = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,100}$`)
+
+// ErrFlagInvalida é devolvido quando o nome da flag não passa na allowlist.
+var ErrFlagInvalida = errors.New("nome de flag inválido")
+
+// validarNomeFlag protege as chamadas HTTP contra injeção de caminho/host.
+func validarNomeFlag(flagName string) error {
+	if !nomeFlagValido.MatchString(flagName) {
+		return fmt.Errorf("%w: %q", ErrFlagInvalida, flagName)
+	}
+	return nil
+}
 
 // getDecision é o wrapper principal
 func (a *App) getDecision(reqCtx context.Context, userID, flagName string) (bool, error) {
@@ -124,13 +143,19 @@ func (a *App) fetchFromServices(reqCtx context.Context, flagName string) (*Combi
 
 // fetchFlag (função helper)
 func (a *App) fetchFlag(reqCtx context.Context, flagName string) (*Flag, error) {
-	url := fmt.Sprintf("%s/flags/%s", a.FlagServiceURL, flagName)
+	if err := validarNomeFlag(flagName); err != nil {
+		return nil, err
+	}
+	// A base vem da configuração (FLAG_SERVICE_URL); só o último segmento é do usuário,
+	// já validado pela allowlist e escapado aqui.
+	endpoint := fmt.Sprintf("%s/flags/%s", a.FlagServiceURL, neturl.PathEscape(flagName))
 
 	apiKey := os.Getenv("SERVICE_API_KEY")
 	// O contexto do request carrega o trace; o transport do otelhttp propaga o traceparent.
-	req, _ := http.NewRequestWithContext(reqCtx, "GET", url, nil)
+	req, _ := http.NewRequestWithContext(reqCtx, "GET", endpoint, nil) // #nosec G704 -- host fixo por config + allowlist no nome da flag
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
+	// #nosec G704 -- URL montada acima: host fixo (config) + nome da flag validado por allowlist
 	resp, err := a.HttpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("erro ao chamar flag-service: %w", err)
@@ -153,11 +178,15 @@ func (a *App) fetchFlag(reqCtx context.Context, flagName string) (*Flag, error) 
 }
 
 func (a *App) fetchRule(reqCtx context.Context, flagName string) (*TargetingRule, error) {
-	url := fmt.Sprintf("%s/rules/%s", a.TargetingServiceURL, flagName)
-	apiKey := os.Getenv("SERVICE_API_KEY") // Usa a mesma chave
-	req, _ := http.NewRequestWithContext(reqCtx, "GET", url, nil)
+	if err := validarNomeFlag(flagName); err != nil {
+		return nil, err
+	}
+	endpoint := fmt.Sprintf("%s/rules/%s", a.TargetingServiceURL, neturl.PathEscape(flagName))
+	apiKey := os.Getenv("SERVICE_API_KEY")                             // Usa a mesma chave
+	req, _ := http.NewRequestWithContext(reqCtx, "GET", endpoint, nil) // #nosec G704 -- host fixo por config + allowlist no nome da flag
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
+	// #nosec G704 -- URL montada acima: host fixo (config) + nome da flag validado por allowlist
 	resp, err := a.HttpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("erro ao chamar targeting-service: %w", err)
