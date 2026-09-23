@@ -12,10 +12,15 @@ import (
 	"github.com/aws/aws-sdk-go/service/sqs"
 	"github.com/go-redis/redis/v8"
 	"github.com/joho/godotenv"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
 )
 
 // Contexto global para o Redis
 var ctx = context.Background()
+
+// tracer usado nos spans manuais (Redis e SQS)
+var tracer = otel.Tracer("evaluation-service")
 
 // App struct para injeção de dependência
 type App struct {
@@ -29,6 +34,17 @@ type App struct {
 
 func main() {
 	_ = godotenv.Load() // Carrega .env para dev local
+
+	// --- Telemetria (OpenTelemetry) ---
+	shutdownTelemetry, err := setupTelemetry(ctx)
+	if err != nil {
+		log.Printf("Aviso: falha ao iniciar o OpenTelemetry: %v", err)
+	}
+	defer func() {
+		ctxShutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownTelemetry(ctxShutdown)
+	}()
 
 	// --- Configuração ---
 	port := os.Getenv("PORT")
@@ -62,7 +78,7 @@ func main() {
 	}
 
 	// --- Inicializa Clientes ---
-	
+
 	// Cliente Redis
 	opt, err := redis.ParseURL(redisURL)
 	if err != nil {
@@ -91,9 +107,11 @@ func main() {
 		log.Printf("Cliente SQS inicializado com sucesso (Endpoint: %s).", os.Getenv("AWS_ENDPOINT_URL"))
 	}
 
-	// Cliente HTTP (com timeout)
+	// Cliente HTTP (com timeout). O transport do otelhttp cria o span de cliente e
+	// injeta o header traceparent, ligando este serviço ao flag-service e ao targeting-service.
 	httpClient := &http.Client{
-		Timeout: 5 * time.Second,
+		Timeout:   5 * time.Second,
+		Transport: otelhttp.NewTransport(http.DefaultTransport),
 	}
 
 	// Cria a instância da App
@@ -111,8 +129,16 @@ func main() {
 	mux.HandleFunc("/health", app.healthHandler)
 	mux.HandleFunc("/evaluate", app.evaluationHandler)
 
+	// Cada request vira um span de servidor; o /health fica de fora para não poluir os traces.
+	handler := otelhttp.NewHandler(mux, "evaluation-service",
+		otelhttp.WithFilter(func(r *http.Request) bool { return r.URL.Path != "/health" }),
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+			return r.Method + " " + r.URL.Path
+		}),
+	)
+
 	log.Printf("Serviço de Avaliação (Go) rodando na porta %s", port)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	if err := http.ListenAndServe(":"+port, handler); err != nil {
 		log.Fatal(err)
 	}
 }
